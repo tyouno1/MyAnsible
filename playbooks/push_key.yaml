@@ -1,0 +1,5 @@
+- hosts: "{{hosts}}"
+  gather_facts: false
+  tasks:
+  - name: push_key
+    authorized_key: user=support key="{{ lookup('file','~/.ssh/id_rsa.pub')}}"
