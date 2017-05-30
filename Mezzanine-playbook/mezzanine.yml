@@ -1,20 +1,21 @@
 ---
-- name: Deploy mazzanine
-  hosts: web
+- name: Deploy mezzanine
+  hosts: webservers
   vars:
     user: "{{ ansible_ssh_user }}"
-    proj_name: mazzanine-example
+    proj_name: mezzanine-example
     venv_home: "{{ ansible_env.HOME }}"
     venv_path: "{{ venv_home}}/{{ proj_name }}"
     proj_dirname: project
     proj_path: "{{ venv_path }}/{{ proj_dirname }}"
-    reqs_path: requirement.txt
+    reqs_path: requirements.txt
     manage: "{{ python }} {{ proj_path }}/manage.py"
     live_hostname: 192.168.137.188.xip.io
     domains:
       - 192.168.137.188.xip.io
       - www.192.168.137.188.xip.io
-    reop_url: git@github.com:lorin/mezzaine-example.git
+    #repo_url: git@github.com:tyouno1/mezzaine-example.git
+    repo_url: https://github.com/tyouno1/mezzanine-example.git
     gunicorn_port: 8000
     locale: en_US.UTF-8
     # Variables bellow don't appear in Mezannine's fabfile.py
@@ -26,7 +27,7 @@
     database_user: "{{ proj_name }}"
     database_host: localhost
     database_port: 5432
-    gunicorn_proc_name: mezzaine
+    gunicorn_proc_name: mezzanine
   vars_files:
     - secrets.yml
   tasks:
@@ -48,15 +49,18 @@
         - supervisor
     - name: check out the repository on the host
       git: repo={{ repo_url }} dest={{ proj_path }} accept_hostkey=yes
+    - name: generate the pip.conf
+      template: src=templates/pip.conf.j2 dest={{ venv_home }}/.pip/pip.conf
     - name: install required python packages
-      pip: name={{ item }} virtualenv={{ venv_path }}
+      pip: name={{ item.name }} version={{ item.version }} virtualenv={{ venv_path }}
       with_items:
-        - gunicorn
-        - setproctitle
-        - south
-        - psycopg2
-        - django-compressor
-        - python-memcached
+        - {name: mezzanine, version: 3.1.10 }
+        - {name: gunicorn, version: 19.1.1 }
+        - {name: setproctitle, version: 1.1.8 }
+        - {name: south, version: 1.0.1 }
+        - {name: psycopg2, version: 2.5.4 }
+        - {name: django-compressor, version: 1.4 }
+        - {name: python-memcached, version: 1.53 }
     - name: install requirements.txt
       pip: requirements={{ proj_path }}/{{ reqs_path }} virtualenv={{ venv_path }}
     - name: create a user
@@ -77,7 +81,7 @@
       sudo_user: postgres
     - name: generate the setting file
       template: src=templates/local_settings.py.j2 dest={{ proj_path }}/local_settings.py
-    - name: sync the dataase, apply migrations, collect static content
+    - name: sync the database, apply migrations, collect static content
       django_manage:
         command: "{{ item }}"
         app_path: "{{ proj_path }}"
@@ -105,7 +109,7 @@
       sudo: True
       notify: restart supervisor
     - name: set the nginx config file
-      template: src=templates/nginx.conf.j2 dest=/etc/nginx-available/mezzanine.conf
+      template: src=templates/nginx.conf.j2 dest=/etc/nginx/sites-available/mezzanine.conf
       sudo: True
       notify: restart nginx
     - name: enable the nginx config file
@@ -136,7 +140,7 @@
       cron: name="poll twitter" minute="*/5" user={{ user }} job="{{ manage }} poll_twitter"
   handlers:
     - name: restart supervisor
-      supervisorctl: name=gunicorn_mezzanine state=restarted
+      supervisorctl: name=gunicorn_mezzanine-example state=restarted
       sudo: True
     - name: restart nginx
       service: name=nginx state=restarted
