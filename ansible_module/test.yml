@@ -1,0 +1,9 @@
+- name: test my new module
+  connection: local
+  hosts: localhost
+  tasks:
+  - name: run the new module
+    can_reach:
+      host: localhost
+      port: 21
+      timeout: 3
