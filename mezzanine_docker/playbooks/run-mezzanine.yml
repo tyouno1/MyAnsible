@@ -1,0 +1,154 @@
+---
+- name: run mezzanine from containers
+  hosts: localhost
+  vars_files:
+    - secrets.yml
+  vars:
+    # The postgres container uses the same name for the database
+    # and the user
+    database_name: mezzanine
+    database_user: mezzanine
+    database_port: 5432
+    gunicorn_port: 8000
+    postgres_container_name : postgres
+    docker_host: "{{ lookup('env', 'DOCKER_HOST') | regex_replace('^tcp://(.*):\\d+$', '\\\\1') | default('localhost', true) }}"
+    project_dir: /srv/project
+    website_domain: "{{ docker_host }}.xip.io"
+    mezzanine_env:
+      SECRET_KEY: "{{ secret_key }}"
+      NEVERCACHE_KEY: "{{ nevercache_key }}"
+      ALLOWED_HOSTS: "*"
+      DATABASE_NAME: "{{ database_name }}"
+      DATABASE_USER: "{{ database_user }}"
+      DATABASE_PASSWORD: "{{ database_password }}"
+      DATABASE_HOST: "{{ database_host }}"
+      DATABASE_PORT: "{{ database_port }}"
+      GUNICORN_PORT: "{{ gunicorn_port }}"
+    setadmin_env:
+      PROJECT_DIR: "{{ project_dir }}"
+      ADMIN_PASSWORD: "{{ admin_password }}"
+    setsite_env:
+      PROJECT_DIR: "{{ project_dir }}"
+      WEBSITE_DOMAIN: "{{ website_domain }}"
+
+  tasks:
+    - name: start the postgres container
+      docker_container:
+        name: "{{ postgres_container_name }}"
+        image: postgres:9.4
+        state: started
+        ports:
+          - "0.0.0.0:5432:5432"
+        env:
+          POSTGRES_USER: "{{ database_user }}"
+          POSTGRES_PASSWORD: "{{ database_password }}"
+
+    - name: inspect postgres docker container ip address
+      command: >
+        docker inspect --type=container
+        --format="{{ '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' }}"
+        {{ postgres_container_name }}
+      register: postgres_address_result
+    
+    - name: inspect postgres docker host port
+      command: >
+        docker inspect --type=container
+        --format="{{ '{{range $p, $conf := .NetworkSettings.Ports}}{{(index $conf 0).HostPort}} {{end}}' }}"
+        {{ postgres_container_name }}
+      register: postgres_hostport_result
+
+    - name: capture database ip address and mapped port
+      set_fact:
+        database_host: "{{ postgres_address_result.stdout }}"
+        mapped_database_port: "{{ postgres_hostport_result.stdout  }}"
+
+    - name: wait for database to come up
+      wait_for: host={{ docker_host }} port={{ mapped_database_port }}
+
+    - name: initialize database
+      docker_container:
+        name: mezzanine
+        image: lorin/mezzanine:latest
+        command: python manage.py {{ item }} --noinput
+        state: started
+        env: "{{ mezzanine_env }}"
+      with_items:
+        - syncdb
+        - migrate
+      register: django
+    - name: set the site id
+      docker_container:
+        image: lorin/mezzanine:latest
+        name: mezzanine
+        state: started
+        command: /srv/scripts/setsite.py
+        env: "{{ setsite_env.update(mezzanine_env) }}{{ setsite_env }}"
+    - name: set the admin password
+      docker_container:
+        image: lorin/mezzanine:latest
+        name: mezzanine
+        state: started
+        command: /srv/scripts/setadmin.py
+        env: "{{ setadmin_env.update(mezzanine_env) }}{{ setadmin_env }}"
+    - name: start the memcached container
+      docker_container:
+        image: lorin/memcached:latest
+        name: memcached
+        state: started
+    - name: start the mezzanine container
+      docker_container:
+        image: lorin/mezzanine:latest
+        name: mezzanine
+        env: "{{ mezzanine_env }}"
+        state: started
+        links: memcached
+    - name: start the mezzanine 
+      docker_container:
+        image: lorin/mezzanine:latest
+        name: mezzanine
+        state: started
+        env: "{{ mezzanine_env }}"
+    - name: start the cert container
+      docker_container:
+        image: lorin/certs:latest
+        name: certs
+        state: started
+
+    - name: inspect postgres docker container ip address
+      command: >
+        docker inspect --type=container
+        --format="{{ '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' }}"
+        mezzanine
+      register: mezzanine_address_result
+    
+    - name: inspect mezzanine docker port
+      command: >
+        docker inspect --type=container
+        --format="{{ '{{range $p, $conf := .NetworkSettings.Ports}}{{$p}}{{end}}'  }}"
+        mezzanine
+      register: mezzanine_port_result
+    
+    - name: capture mezzanine ip address and port
+      set_fact:
+        mezzanine_host: "{{ mezzanine_address_result.stdout }}"
+        mezzanine_port: "{{ mezzanine_port_result.stdout  | regex_replace('^(.*)/tcp$', '\\1') }}"
+
+    - name: Debug write_file_result
+      debug:
+        var: mezzanine_port
+
+    - name: wait for mezzanine to come up
+      wait_for: host={{ mezzanine_host }} port={{ mezzanine_port }}
+
+    - name: run nginx
+      docker_container:
+        image: lorin/nginx-mezzanine:latest
+        ports:
+          - 80:80
+          - 443:443
+        name: nginx
+        volumes_from:
+          - mezzanine
+          - certs
+        state: started
+        links: mezzanine
